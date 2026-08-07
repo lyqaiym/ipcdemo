@@ -36,11 +36,34 @@ Kotlin → C++ flow spans three files, and changing any one requires updating th
 
 **Invariant:** the CMake library name (`ipcdemo`), the `System.loadLibrary("ipcdemo")` argument, and the JNI symbol prefix (`Java_com_example_ipcdemo_MainActivity_...`) must stay in sync. Adding a new native method means adding an `external` function in Kotlin and a matching `Java_<package-with-underscores>_<ClassName>_<methodName>` symbol in C++.
 
+### POSIX signal IPC demo
+
+`NativeSignal.kt` + `native-lib.cpp` implement a signal channel between the main process and the `:remote` process (`RemoteService`, declared with `android:process=":remote"` in the manifest). This only works because both processes share the app's UID — `kill`/`sigqueue` to another app's pid fails with `EPERM`.
+
+- The signal used is bionic's `SIGRTMIN` (41 in practice, i.e. `__SIGRTMIN + 9`). Never hardcode a number: bionic reserves `__SIGRTMIN`..`__SIGRTMIN+8` for POSIX timers, debuggerd, profilers, ART and fdtrack, and `SIGRTMIN` already skips them. `SIGQUIT`, `SIGUSR1`, `SIGSEGV` and `SIGBUS` are also claimed by ART — don't reuse them.
+- `OnSignal` in `native-lib.cpp` runs in signal context, so it does nothing but `write()` an 8-byte `Packet{sender_pid, value}` to a self-pipe (atomic because it is below `PIPE_BUF`). `nativeWaitOne()` blocks on the read end and is driven by a daemon thread in `NativeSignal.start()`; delivery to Kotlin happens via `NativeSignal.onPacket`.
+- Peer discovery: `MainActivity` passes its pid in the bind Intent, and `RemoteService.onBind` announces itself back with `sigqueue`, so the main process learns the remote pid from `siginfo.si_pid`. The service is reached with `bindService` rather than `startService` because a background `startService` from `onCreate` throws `BackgroundServiceStartNotAllowedException`.
+
+### Unix domain socket demo
+
+`LocalIpc.kt` is the counterpart to the signal channel and shows what signals cannot do: arbitrary-length ordered payloads. `LocalIpc.EchoServer` is created in `RemoteService.onCreate` (so it lives in `:remote`) and `MainActivity` drives `LocalIpc.Client` from a `HandlerThread` — the read/write calls block and must never run on the UI thread. Protocol is newline-delimited UTF-8.
+
+**Security:** the socket uses the Linux abstract namespace (`LocalSocketAddress.Namespace.ABSTRACT`), which has no filesystem permissions — any app that guesses the name can connect. `EchoServer.serve` therefore rejects connections whose `peerCredentials.uid` is not our own uid. Keep that check if you extend the protocol.
+
+### Shared memory demo
+
+`ShmIpc.kt` plus the `Messenger` in `RemoteService` share a 1 MiB buffer: `MainActivity.shareMemory` creates a `SharedMemory`, fills it, checksums it, then passes it in a `Message` `Bundle`. Only the fd crosses Binder, so the payload is neither copied nor bounded by the ~1 MB transaction limit. `RemoteService.readSharedMemory` maps it, checksums it and replies via `msg.replyTo` so both sides can be compared.
+
+- `SharedMemory` requires API 27 while `minSdk` is 24, hence the `Build.VERSION.SDK_INT` guard and the disabled button on older devices. Do not switch to `MemoryFile`: getting its fd needs reflection over a blocked non-SDK interface.
+- The sender calls `setProtect(OsConstants.PROT_READ)` after unmapping its own writable mapping (order matters), so the receiver can only map read-only — `readSharedMemory` asserts this by attempting `mapReadWrite()` and expecting `EPERM`.
+- Every mapping needs `SharedMemory.unmap`, and both processes must `close()` their own `SharedMemory` instance; the fd is duplicated by the transaction.
+- This is the only channel that needs a real Binder interface, which is why `onBind` returns `messenger.binder` rather than a bare `Binder`.
+
 ### Module layout
 
-- `app/src/main/java/` — Kotlin sources (only `MainActivity.kt`).
+- `app/src/main/java/` — Kotlin sources: `MainActivity.kt`, `NativeSignal.kt`, `LocalIpc.kt`, `ShmIpc.kt`, `RemoteService.kt`.
 - `app/src/main/cpp/` — native C++ sources and `CMakeLists.txt`, built via `externalNativeBuild { cmake }` in `app/build.gradle.kts`.
-- `app/src/main/res/` — resources; the single layout `activity_main.xml` uses a ConstraintLayout with a `TextView` id `sample_text` (bound via ViewBinding as `ActivityMainBinding`).
+- `app/src/main/res/` — resources; the single layout `activity_main.xml` is a vertical `LinearLayout` (`sample_text`, `status`, `send`, `log_scroll`/`log`), bound via ViewBinding as `ActivityMainBinding`.
 - `app/src/test/` — local JVM unit tests (`ExampleUnitTest.kt`).
 - `app/src/androidTest/` — instrumented tests (`ExampleInstrumentedTest.kt`).
 
