@@ -8,6 +8,7 @@ import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Message
 import android.os.Messenger
+import android.os.ParcelFileDescriptor
 import android.os.Process
 import android.os.SharedMemory
 import android.system.ErrnoException
@@ -53,9 +54,51 @@ class RemoteService : Service() {
     }
 
     private fun onMessage(msg: Message) {
-        if (msg.what == ShmIpc.MSG_WRITE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            readSharedMemory(msg)
+        when {
+            msg.what == ShmIpc.MSG_WRITE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1 ->
+                readSharedMemory(msg)
+
+            msg.what == NativeRing.MSG_START -> consumeRing(msg)
         }
+    }
+
+    private fun consumeRing(msg: Message) {
+        val data = msg.data ?: return
+        @Suppress("DEPRECATION")
+        fun fd(key: String) = data.getParcelable<ParcelFileDescriptor>(key)?.detachFd() ?: -1
+
+        // detachFd right away: once a ParcelFileDescriptor becomes unreachable its
+        // finalizer closes the descriptor out from under us.
+        val shmFd = fd(NativeRing.KEY_SHM)
+        val spaceFd = fd(NativeRing.KEY_SPACE)
+        val dataFd = fd(NativeRing.KEY_DATA)
+        val reply = msg.replyTo
+
+        Thread({
+            val handle = NativeRing.attach(
+                shmFd, spaceFd, dataFd, NativeRing.SLOTS, NativeRing.SLOT_SIZE
+            )
+            if (handle == 0L) {
+                Log.w(TAG, "ring attach failed")
+                return@Thread
+            }
+            var frames = 0
+            var corrupt = 0
+            loop@ while (true) {
+                when (val frameId = NativeRing.consume(handle)) {
+                    0L -> break@loop
+                    -1L -> {
+                        Log.w(TAG, "ring consume timed out after $frames frames")
+                        break@loop
+                    }
+                    -2L -> corrupt++
+                    else -> frames++
+                }
+            }
+            NativeRing.destroy(handle)
+            Log.i(TAG, "ring consumed $frames frames, $corrupt corrupt")
+            reply?.send(Message.obtain(null, NativeRing.MSG_DONE, frames, corrupt))
+        }, "ring-consumer").start()
     }
 
     @RequiresApi(Build.VERSION_CODES.O_MR1)

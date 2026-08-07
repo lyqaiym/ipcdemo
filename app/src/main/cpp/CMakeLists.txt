@@ -26,7 +26,8 @@ project("ipcdemo")
 # used in the AndroidManifest.xml file.
 add_library(${CMAKE_PROJECT_NAME} SHARED
         # List C/C++ source files with relative paths to this CMakeLists.txt.
-        native-lib.cpp)
+        native-lib.cpp
+        ring.cpp)
 
 # Specifies libraries CMake should link to your target library. You
 # can link libraries from various origins, such as libraries defined in this
@@ -35,3 +36,9 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
         # List libraries link to the target library
         android
         log)
+
+# minSdk is 24 but ring.cpp calls ASharedMemory_create (API 26). This makes symbols
+# newer than minSdk weak instead of hard errors, so they can be guarded at runtime
+# with __builtin_available().
+target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
+        __ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__)

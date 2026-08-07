@@ -13,7 +13,9 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.Message
 import android.os.Messenger
+import android.os.ParcelFileDescriptor
 import android.os.Process
+import android.os.RemoteException
 import android.os.SharedMemory
 import android.system.OsConstants
 import android.view.View
@@ -42,9 +44,13 @@ class MainActivity : AppCompatActivity() {
     private var lastChecksum = 0
 
     private val replyTo = Messenger(Handler(Looper.getMainLooper()) { msg ->
-        if (msg.what == ShmIpc.MSG_RESULT) {
-            val verdict = if (msg.arg2 == lastChecksum) "一致" else "不一致"
-            log("<- :remote 读到 ${msg.arg1}B checksum=${msg.arg2} ($verdict)")
+        when (msg.what) {
+            ShmIpc.MSG_RESULT -> {
+                val verdict = if (msg.arg2 == lastChecksum) "一致" else "不一致"
+                log("<- :remote 读到 ${msg.arg1}B checksum=${msg.arg2} ($verdict)")
+            }
+
+            NativeRing.MSG_DONE -> log("<- :remote 收到 ${msg.arg1} 帧，损坏 ${msg.arg2} 帧")
         }
         true
     })
@@ -90,6 +96,8 @@ class MainActivity : AppCompatActivity() {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) shareMemory()
             }
         }
+        binding.streamRing.isEnabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+        binding.streamRing.setOnClickListener { io.post { streamRing() } }
     }
 
     override fun onDestroy() {
@@ -111,6 +119,52 @@ class MainActivity : AppCompatActivity() {
         } catch (e: IOException) {
             client = null
             log("socket 出错: ${e.message}")
+        }
+    }
+
+    private fun streamRing() {
+        val target = remote
+        if (target == null) {
+            log(":remote 还没绑定上")
+            return
+        }
+        val handle = NativeRing.create(NativeRing.SLOTS, NativeRing.SLOT_SIZE)
+        if (handle == 0L) {
+            log("ring 创建失败")
+            return
+        }
+        try {
+            val fds = NativeRing.exportFds(handle).map { ParcelFileDescriptor.adoptFd(it) }
+            val message = Message.obtain(null, NativeRing.MSG_START)
+            message.data = Bundle().apply {
+                putParcelable(NativeRing.KEY_SHM, fds[0])
+                putParcelable(NativeRing.KEY_SPACE, fds[1])
+                putParcelable(NativeRing.KEY_DATA, fds[2])
+            }
+            message.replyTo = replyTo
+            target.send(message)
+            fds.forEach { it.close() }
+
+            val startedAt = System.nanoTime()
+            for (frameId in 1L..NativeRing.FRAMES) {
+                if (NativeRing.produce(handle, frameId) != 0) {
+                    log("ring 生产失败于第 $frameId 帧（消费方没跟上或已退出）")
+                    return
+                }
+            }
+            NativeRing.produce(handle, 0)
+
+            val millis = (System.nanoTime() - startedAt) / 1_000_000
+            val bytes = NativeRing.FRAMES.toLong() * NativeRing.SLOT_SIZE
+            val throughput = if (millis > 0) bytes * 1000 / millis / (1 shl 20) else 0
+            log(
+                "-> ring 写完 ${NativeRing.FRAMES} 帧 / ${bytes shr 20}MiB，${millis}ms" +
+                        "，${throughput}MiB/s，因满而阻塞 ${NativeRing.waits(handle)} 次"
+            )
+        } catch (e: RemoteException) {
+            log("ring 出错: $e")
+        } finally {
+            NativeRing.destroy(handle)
         }
     }
 

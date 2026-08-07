@@ -41,6 +41,13 @@
         android:layout_marginTop="8dp"
         android:text="shm: 共享 1MiB 给 :remote" />
 
+    <Button
+        android:id="@+id/stream_ring"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="ring: shm + eventfd 流式跑 240 帧" />
+
     <ScrollView
         android:id="@+id/log_scroll"
         android:layout_width="match_parent"

@@ -59,10 +59,20 @@ Kotlin → C++ flow spans three files, and changing any one requires updating th
 - Every mapping needs `SharedMemory.unmap`, and both processes must `close()` their own `SharedMemory` instance; the fd is duplicated by the transaction.
 - This is the only channel that needs a real Binder interface, which is why `onBind` returns `messenger.binder` rather than a bare `Binder`.
 
+### Ring buffer demo (shared memory + eventfd)
+
+`ring.cpp` and `NativeRing.kt` implement a cross-process SPSC ring: 4 slots of 256 KiB in shared memory, with two `eventfd`s created `EFD_SEMAPHORE` as counting semaphores (`space_fd` starts at the slot count, `data_fd` at 0). `MainActivity.streamRing` produces 240 frames while a thread in `RemoteService.consumeRing` verifies them; the result comes back over the `Messenger`. Measured ~400 MiB/s with zero corrupt frames and ~230 producer stalls, i.e. backpressure works.
+
+- The shared region needs **no atomics and no locks**: each side only touches a slot it holds a semaphore permit for, and the eventfd syscalls supply the memory barriers. `Ring::cursor` is therefore private to whichever process owns that `Ring`.
+- `ASharedMemory_create` is API 26 while `minSdk` is 24, so `CMakeLists.txt` defines `__ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__` and the call sits behind `__builtin_available(android 26, *)`. Without that define the NDK treats the symbol as hard-unavailable and the guard does not compile.
+- fds travel as `ParcelFileDescriptor` in the `Message` `Bundle`. The consumer must `detachFd()` immediately on receipt — a `ParcelFileDescriptor` closes its descriptor from its finalizer, so holding one across a thread hand-off loses the fd.
+- `frameId` 0 is the EOF sentinel. Both `SemWait`s use a 5 s `poll` timeout so a dead peer cannot hang the producer or consumer forever.
+- Native handles are raw pointers passed as `jlong`; every `create`/`attach` needs a matching `destroy`.
+
 ### Module layout
 
-- `app/src/main/java/` — Kotlin sources: `MainActivity.kt`, `NativeSignal.kt`, `LocalIpc.kt`, `ShmIpc.kt`, `RemoteService.kt`.
-- `app/src/main/cpp/` — native C++ sources and `CMakeLists.txt`, built via `externalNativeBuild { cmake }` in `app/build.gradle.kts`.
+- `app/src/main/java/` — Kotlin sources: `MainActivity.kt`, `NativeSignal.kt`, `LocalIpc.kt`, `ShmIpc.kt`, `NativeRing.kt`, `RemoteService.kt`.
+- `app/src/main/cpp/` — native C++ sources (`native-lib.cpp`, `ring.cpp`) and `CMakeLists.txt`, built via `externalNativeBuild { cmake }` in `app/build.gradle.kts`.
 - `app/src/main/res/` — resources; the single layout `activity_main.xml` is a vertical `LinearLayout` (`sample_text`, `status`, `send`, `log_scroll`/`log`), bound via ViewBinding as `ActivityMainBinding`.
 - `app/src/test/` — local JVM unit tests (`ExampleUnitTest.kt`).
 - `app/src/androidTest/` — instrumented tests (`ExampleInstrumentedTest.kt`).
