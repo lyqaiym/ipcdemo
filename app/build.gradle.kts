@@ -1,5 +1,13 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
+}
+
+// 签名信息从 local.properties 读取（该文件不进 git）
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
 }
 
 android {
@@ -23,11 +31,23 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            localProperties.getProperty("keystore.path")?.let { path ->
+                storeFile = rootProject.file(path)
+                storePassword = localProperties.getProperty("keystore.password")
+                keyAlias = localProperties.getProperty("key.alias")
+                keyPassword = localProperties.getProperty("key.password")
+            }
+        }
+    }
+
     buildTypes {
         release {
             optimization {
                 enable = false
             }
+            signingConfig = signingConfigs.getByName("release")
         }
     }
     compileOptions {
