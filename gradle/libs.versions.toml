@@ -6,6 +6,9 @@ junitVersion = "1.1.5"
 espressoCore = "3.5.1"
 appcompat = "1.6.1"
 material = "1.10.0"
+walle = "1.1.5"
+wallePayloadWriter = "1.1.7"
+orgJson = "20231013"
 constraintlayout = "2.1.4"
 
 [libraries]
@@ -15,6 +18,9 @@ androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "j
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
 androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
 material = { group = "com.google.android.material", name = "material", version.ref = "material" }
+walle = { group = "com.meituan.android.walle", name = "library", version.ref = "walle" }
+walle-payload-writer = { group = "com.meituan.android.walle", name = "payload_writer", version.ref = "wallePayloadWriter" }
+org-json = { group = "org.json", name = "json", version.ref = "orgJson" }
 androidx-constraintlayout = { group = "androidx.constraintlayout", name = "constraintlayout", version.ref = "constraintlayout" }
 
 [plugins]

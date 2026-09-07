@@ -19,6 +19,13 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // walle 仅发布在已停运的 jcenter，Maven Central 上没有；只让该 group 走阿里云镜像
+        maven {
+            url = uri("https://maven.aliyun.com/repository/public")
+            content {
+                includeGroup("com.meituan.android.walle")
+            }
+        }
     }
 }
 

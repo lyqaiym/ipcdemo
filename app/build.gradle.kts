@@ -1,3 +1,5 @@
+import com.meituan.android.walle.ChannelWriter
+import java.io.File
 import java.util.Properties
 
 plugins {
@@ -65,11 +67,44 @@ android {
     }
 }
 
+// walle 多渠道打包：官方插件不兼容 AGP 9（applicationVariants API 已移除），
+// 改为直接调用 payload_writer，给已 v2 签名的 release APK 注入渠道
+tasks.register("assembleReleaseChannels") {
+    group = "publishing"
+    description = "生成 walle 多渠道 release 包。渠道列表见 app/channel，输出到 build/outputs/channels/"
+    dependsOn("assembleRelease")
+
+    val channelsFile = layout.projectDirectory.file("channel")
+    val releaseApk = layout.buildDirectory.file("outputs/apk/release/app-release.apk")
+    val outDir = layout.buildDirectory.dir("outputs/channels")
+    inputs.file(channelsFile)
+    inputs.file(releaseApk)
+    outputs.dir(outDir)
+
+    doLast {
+        val channels = channelsFile.asFile.readLines()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && !it.startsWith("#") }
+            .map { it.substringBefore("#").trim() }
+            .filter { it.isNotEmpty() }
+        val output = outDir.get().asFile
+        output.mkdirs()
+        channels.forEach { channel ->
+            val channelApk = File(output, "app-release-$channel.apk")
+            releaseApk.get().asFile.copyTo(channelApk, overwrite = true)
+            // ChannelWriter 直接改写 APK Signing Block，注入后 v2/v3 签名仍然有效
+            ChannelWriter.put(channelApk, channel)
+            logger.lifecycle("walle channel apk: ${channelApk.absolutePath}")
+        }
+    }
+}
+
 dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.constraintlayout)
     implementation(libs.androidx.core.ktx)
     implementation(libs.material)
+    implementation(libs.walle)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
